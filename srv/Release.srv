@@ -1,0 +1,24 @@
+# Release (un-weld) two interface sites that are currently docked.
+#
+# The plugin waits for the group's release time and then deactivates the weld
+# constraint, returning the slot to the weld pool.
+
+# Name of the first interface site.
+string site1
+
+# Name of the second interface site.
+string site2
+
+# Optional maximum time [s] to wait for the release to finish.
+# 0 (default) -> use the group's release_time plus a small margin.
+float64 timeout
+
+---
+# True when the weld has been deactivated (or was not active).
+bool success
+
+# Human readable status / error description.
+string message
+
+# Final state: "released" | "not_docked" | "rejected" | "timeout" | "cancelled".
+string state

@@ -1,0 +1,16 @@
+<library path="mujoco_dock_sim_plugin_impl">
+  <class name="mujoco_dock_sim_plugin/DockSimPlugin"
+         type="mujoco_dock_sim_plugin::DockSimPlugin"
+         base_class_type="mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase">
+    <description>
+      Simulates docking between pairs of MuJoCo sites by driving a pool of weld equality
+      constraints.  Interfaces are grouped; a dock is only allowed between two sites of the
+      same group (and, when the group defines male_sites / female_sites, only between a male
+      and a female site).  A dock succeeds when the two sites' relative pose stays within the
+      group's tolerance of the group's docking relative pose for the configured dock time,
+      after which the weld is activated and the pair is locked.  Release deactivates the weld
+      after the configured release time.  Both operations are offered as services (~/dock,
+      ~/release) and as actions (~/dock, ~/release).
+    </description>
+  </class>
+</library>

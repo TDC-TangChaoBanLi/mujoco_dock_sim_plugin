@@ -1,0 +1,13 @@
+# Goal: release (un-weld) two docked interface sites.
+string site1
+string site2
+float64 timeout
+---
+# Result
+bool success
+string message
+---
+# Feedback
+# state: "waiting" | "releasing" | "released"
+string state
+float64 elapsed

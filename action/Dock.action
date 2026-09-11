@@ -1,0 +1,17 @@
+# Goal: dock (weld) two interface sites together.
+string site1
+string site2
+string group
+float64 timeout
+---
+# Result
+bool success
+string message
+geometry_msgs/Pose relpose
+---
+# Feedback
+# state: "waiting" | "within_tolerance" | "docked"
+string state
+float64 elapsed
+float64 position_error
+float64 rotation_error

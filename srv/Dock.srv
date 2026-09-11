@@ -1,0 +1,33 @@
+# Dock (weld) two interface sites together.
+#
+# The plugin looks up the two sites, checks that they belong to the same interface
+# group, waits until their relative pose is within that group's tolerance of the
+# group's docking relative pose, holds that condition for the group's dock time and
+# then activates the weld constraint, locking the two objects together.
+
+# Name of the first interface site (the "plug"/moving side, usually the carried part).
+string site1
+
+# Name of the second interface site (the "socket"/fixed side).
+string site2
+
+# Optional interface group name. Empty -> the plugin picks the first group that
+# contains both sites.
+string group
+
+# Optional maximum time [s] to wait for the sequence to finish.
+# 0 (default) -> use the group's dock_time plus a small margin.
+float64 timeout
+
+---
+# True when the pair is welded (or already was).
+bool success
+
+# Human readable status / error description.
+string message
+
+# Final state: "docked" | "already_docked" | "rejected" | "timeout" | "cancelled".
+string state
+
+# Achieved relative pose of the second site expressed in the first site's frame.
+geometry_msgs/Pose relpose
