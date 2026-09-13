@@ -58,11 +58,29 @@ namespace mujoco_dock_sim_plugin
  *     either list only a male/female pair may dock.  When neither is defined the group
  *     is genderless and any two of its sites may dock.
  *   * `position_tolerance` / `rotation_tolerance` - how close the two sites must be to
- *     the docking relative pose for a dock to start / to stay valid,
- *   * `dock_relpose` - the target relative pose of site2 expressed in site1's frame
- *     (identity for a plain connector),
+ *     the docking target for a dock to start / to stay valid,
+ *   * `dock_target` - the target relative pose of site2 expressed in site1's frame:
+ *     `position` (3) plus `quaternion` (4, in (w, x, y, z) order),
+ *   * `dock_target.symmetry` - which other orientations of that target also count as
+ *     docked: `mode` (`none` / `discrete` / `continuous`), `axis` (`x` / `y` / `z`, in
+ *     site1's frame) and `angles_deg` (discrete mode).  The pair is welded to the
+ *     *nearest* accepted orientation, never to a phase the hardware is not in,
  *   * `dock_time` / `release_time` - how long the relative pose must stay inside the
  *     tolerance before a dock is declared successful (and how long a release takes).
+ *
+ * Site frames
+ * -----------
+ * The plugin never looks at the meaning of a site frame, but the whole scenario is
+ * easiest to describe when every interface follows the same convention:
+ *
+ *   * `+z` is the **outward normal of the mating plane** (it points away from the body
+ *     the interface belongs to, i.e. towards the part it mates with), and
+ *   * `+x` is the **alignment direction** of the connector (e.g. the long edge of a
+ *     rectangular boss / slot).
+ *
+ * Two mated interfaces then have anti-parallel z axes, and for a rectangular connector
+ * the relative orientation of a mated pair is a 180 deg rotation about the y axis, i.e.
+ * `dock_target.quaternion = (0, 0, 1, 0)` (z opposite, x opposite, y parallel).
  *
  * Docking sequence (per pair):
  *   IDLE -> (relative pose inside tolerance) -> WAIT_DOCKING
@@ -118,6 +136,28 @@ public:
 
 private:
   // ---------------------------------------------------------------- configuration
+  /**
+   * @brief Symmetry of the target orientation: which *other* orientations also count as
+   *        "docked".
+   *
+   * Real interfaces are rarely unique in orientation:
+   *   * a rectangular (0.1 x 0.04) connector fits in two phases (180 deg apart about its
+   *     normal), so both may be accepted (`DISCRETE` with angles {0, 180}),
+   *   * a square flange fits in four (`DISCRETE`, {0, 90, 180, 270}),
+   *   * a circular connector fits at any phase (`CONTINUOUS`),
+   *   * a keyed / asymmetric interface only fits one way (`NONE`).
+   *
+   * The plugin measures how far the current relative orientation is from the *set*
+   * {R_axis(angle) o dock_target.quaternion} and welds the pair to the nearest member of
+   * that set, so a symmetric connector is never forced into a nominal phase.
+   */
+  enum class SymmetryMode
+  {
+    NONE,       ///< only the target orientation itself is accepted
+    DISCRETE,   ///< rotations from `angles_deg` about `axis` are also accepted
+    CONTINUOUS  ///< any rotation about `axis` is accepted
+  };
+
   struct Group
   {
     std::string name;
@@ -127,7 +167,11 @@ private:
     bool gendered{ false };
     double position_tolerance{ 0.01 };
     double rotation_tolerance{ 0.1 };
-    double dock_relpose[7]{ 0, 0, 0, 1, 0, 0, 0 };  ///< pos + quat (w,x,y,z) of site2 in site1
+    /// Target pose of site2 in site1's frame: position + quaternion (w, x, y, z).
+    double dock_target[7]{ 0, 0, 0, 1, 0, 0, 0 };
+    SymmetryMode symmetry{ SymmetryMode::NONE };
+    int symmetry_axis{ 2 };               ///< 0 = x, 1 = y, 2 = z (in site1's frame)
+    std::vector<double> symmetry_angles;  ///< radians; DISCRETE only
     double dock_time{ 1.0 };
     double release_time{ 0.0 };
   };
@@ -203,7 +247,10 @@ private:
   int resolveSite(const std::string& name) const;
   int findGroup(int s1, int s2, const std::string& requested) const;
   bool groupAllows(const Group& g, int s1, int s2) const;
-  int acquireSlot(int s1, int s2, int group);
+  /// Acquire a free pool slot.  Slots whose weld is currently *active* are skipped: they
+  /// belong to an interface that is docked (e.g. an MJCF weld that was active at load
+  /// time) and re-pointing them would silently break that weld.
+  int acquireSlot(const mjData* data, int s1, int s2, int group);
   void releaseSlot(int slot);
   int findPair(int s1, int s2) const;
 
@@ -219,8 +266,14 @@ private:
 
   /// Relative pose of site2 in site1's frame from a (snapshot) mjData.
   static void relativePose(const mjData* data, int s1, int s2, double* pos, double* quat);
-  static void poseError(const double* pos, const double* quat, const double* target,
-                        double& pos_err, double& rot_err);
+
+  /// Angle (rad) between two orientations; quaternions are sign-insensitive here.
+  static double quatAngle(const double* a, const double* b);
+
+  /// Distance of a measured pose to the group's docking target set, plus the nearest
+  /// pose of that set (the pose the pair is welded to).
+  void nearestTarget(const Group& g, const double* pos, const double* quat, double* pos_tgt,
+                     double* quat_tgt, double& pos_err, double& rot_err) const;
 
   /// Write the target relative pose (site semantics) of a pair into the given slot.
   void writePairToSlot(const mjData* data, int slot, int s1, int s2, const double* site_relpose);
@@ -229,6 +282,11 @@ private:
   static void quatConj(const double* q, double* out);
   static void quatRotate(const double* q, const double* v, double* out);
   static void matToQuat(const double* m, double* q);
+  static void quatFromAxisAngle(const double* axis_unit, double angle, double* q);
+  /// Shortest-arc rotation taking (unit) `from` onto (unit) `to`.
+  static void quatFromTwoVectors(const double* from, const double* to, double* q);
+  /// Unit vector along axis `index` (0 = x, 1 = y, 2 = z).
+  static void unitAxis(int index, double* out);
 
   // ------------------------------------------------------------------- callbacks
   void handleDockSrv(const DockSrv::Request::SharedPtr req, DockSrv::Response::SharedPtr res);

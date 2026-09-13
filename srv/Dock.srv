@@ -2,8 +2,9 @@
 #
 # The plugin looks up the two sites, checks that they belong to the same interface
 # group, waits until their relative pose is within that group's tolerance of the
-# group's docking relative pose, holds that condition for the group's dock time and
-# then activates the weld constraint, locking the two objects together.
+# group's `dock_target` (taking the target's rotational symmetry into account), holds
+# that condition for the group's dock time and then activates the weld constraint,
+# locking the two objects together in the nearest accepted pose.
 
 # Name of the first interface site (the "plug"/moving side, usually the carried part).
 string site1

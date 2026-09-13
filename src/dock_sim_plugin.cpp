@@ -27,6 +27,12 @@ namespace
 {
 constexpr double kQuatNormEps = 1e-9;
 constexpr double kDefaultTimeout = 30.0;
+constexpr double kPi = 3.14159265358979323846;
+
+const char* axisName(int index)
+{
+  return (index == 0) ? "x" : (index == 1) ? "y" : "z";
+}
 }  // namespace
 
 // ============================================================================
@@ -140,17 +146,131 @@ void DockSimPlugin::relativePose(const mjData* data, int s1, int s2, double* pos
   }
 }
 
-void DockSimPlugin::poseError(const double* pos, const double* quat, const double* target, double& pos_err,
-                              double& rot_err)
+void DockSimPlugin::unitAxis(int index, double* out)
 {
-  const double dx = pos[0] - target[0];
-  const double dy = pos[1] - target[1];
-  const double dz = pos[2] - target[2];
-  pos_err = std::sqrt(dx * dx + dy * dy + dz * dz);
+  out[0] = out[1] = out[2] = 0.0;
+  out[index] = 1.0;
+}
 
-  double dot = quat[0] * target[3] + quat[1] * target[4] + quat[2] * target[5] + quat[3] * target[6];
+double DockSimPlugin::quatAngle(const double* a, const double* b)
+{
+  // q and -q describe the same rotation, hence the absolute value.
+  double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
   dot = std::min(1.0, std::max(-1.0, std::fabs(dot)));
-  rot_err = 2.0 * std::acos(dot);
+  return 2.0 * std::acos(dot);
+}
+
+void DockSimPlugin::quatFromAxisAngle(const double* axis_unit, double angle, double* q)
+{
+  const double half = 0.5 * angle;
+  const double s = std::sin(half);
+  q[0] = std::cos(half);
+  q[1] = s * axis_unit[0];
+  q[2] = s * axis_unit[1];
+  q[3] = s * axis_unit[2];
+}
+
+void DockSimPlugin::quatFromTwoVectors(const double* from, const double* to, double* q)
+{
+  // Shortest-arc rotation with R(q) * from = to (from / to must be unit vectors).
+  const double c = from[0] * to[0] + from[1] * to[1] + from[2] * to[2];
+  if (c > 1.0 - 1e-12)
+  {
+    q[0] = 1.0;
+    q[1] = q[2] = q[3] = 0.0;
+    return;
+  }
+  if (c < -1.0 + 1e-12)
+  {
+    // Anti-parallel: any 180 deg rotation about an axis perpendicular to `from`.
+    int k = 0;
+    if (std::fabs(from[1]) < std::fabs(from[k]))
+    {
+      k = 1;
+    }
+    if (std::fabs(from[2]) < std::fabs(from[k]))
+    {
+      k = 2;
+    }
+    double e[3];
+    unitAxis(k, e);
+    double perp[3] = { from[1] * e[2] - from[2] * e[1], from[2] * e[0] - from[0] * e[2],
+                       from[0] * e[1] - from[1] * e[0] };
+    const double n = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
+    q[0] = 0.0;
+    q[1] = perp[0] / n;
+    q[2] = perp[1] / n;
+    q[3] = perp[2] / n;
+    return;
+  }
+  q[0] = 1.0 + c;
+  q[1] = from[1] * to[2] - from[2] * to[1];
+  q[2] = from[2] * to[0] - from[0] * to[2];
+  q[3] = from[0] * to[1] - from[1] * to[0];
+  const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  for (int i = 0; i < 4; ++i)
+  {
+    q[i] /= n;
+  }
+}
+
+void DockSimPlugin::nearestTarget(const Group& g, const double* pos, const double* quat, double* pos_tgt,
+                                  double* quat_tgt, double& pos_err, double& rot_err) const
+{
+  // The position part of the target is a single point (there is no free axis in
+  // translation, even for a `continuous` rotational symmetry).
+  const double dx = pos[0] - g.dock_target[0];
+  const double dy = pos[1] - g.dock_target[1];
+  const double dz = pos[2] - g.dock_target[2];
+  pos_err = std::sqrt(dx * dx + dy * dy + dz * dz);
+  pos_tgt[0] = g.dock_target[0];
+  pos_tgt[1] = g.dock_target[1];
+  pos_tgt[2] = g.dock_target[2];
+
+  const double* q_t = g.dock_target + 3;
+
+  if (g.symmetry == SymmetryMode::CONTINUOUS)
+  {
+    // Only the direction of `axis` is constrained; the phase about it is free (circular
+    // connector).  Snap the measured orientation with the shortest rotation that puts
+    // R_cur * axis onto the target's axis direction.
+    double axis[3], u[3], v[3];
+    unitAxis(g.symmetry_axis, axis);
+    quatRotate(quat, axis, u);
+    quatRotate(q_t, axis, v);
+    double c = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    c = std::min(1.0, std::max(-1.0, c));
+    rot_err = std::acos(c);  // tilt only: the in-plane phase is not penalised
+    double q_fix[4];
+    quatFromTwoVectors(u, v, q_fix);
+    quatMul(q_fix, quat, quat_tgt);
+    return;
+  }
+
+  // NONE / DISCRETE: the configured target is always a candidate; DISCRETE adds the
+  // rotations of `angles` about `axis` (a rotation in site1's frame, hence pre-multiplied).
+  double q_best[4];
+  std::copy(q_t, q_t + 4, q_best);
+  rot_err = quatAngle(quat, q_best);
+
+  if (g.symmetry == SymmetryMode::DISCRETE)
+  {
+    double axis[3];
+    unitAxis(g.symmetry_axis, axis);
+    for (const double angle : g.symmetry_angles)
+    {
+      double q_rot[4], q_try[4];
+      quatFromAxisAngle(axis, angle, q_rot);
+      quatMul(q_rot, q_t, q_try);
+      const double e = quatAngle(quat, q_try);
+      if (e < rot_err)
+      {
+        rot_err = e;
+        std::copy(q_try, q_try + 4, q_best);
+      }
+    }
+  }
+  std::copy(q_best, q_best + 4, quat_tgt);
 }
 
 // ============================================================================
@@ -195,9 +315,31 @@ bool DockSimPlugin::init(rclcpp::Node::SharedPtr node, const mjModel* model, mjD
               groups_.size(), pool_.size(), dock_srv_->get_service_name(), release_srv_->get_service_name());
   for (const auto& g : groups_)
   {
-    RCLCPP_INFO(logger_, "  group '%s': %zu site(s)%s pos_tol=%.4f rot_tol=%.4f dock_time=%.2fs release_time=%.2fs",
-                g.name.c_str(), g.sites.size(), g.gendered ? " (gendered)" : "", g.position_tolerance,
-                g.rotation_tolerance, g.dock_time, g.release_time);
+    std::string sym;
+    switch (g.symmetry)
+    {
+      case SymmetryMode::NONE:
+        sym = "none";
+        break;
+      case SymmetryMode::CONTINUOUS:
+        sym = std::string("continuous about ") + axisName(g.symmetry_axis);
+        break;
+      case SymmetryMode::DISCRETE:
+        sym = std::string("discrete about ") + axisName(g.symmetry_axis) + " [";
+        for (size_t i = 0; i < g.symmetry_angles.size(); ++i)
+        {
+          sym += (i == 0 ? "" : ", ");
+          sym += std::to_string(static_cast<int>(std::lround(g.symmetry_angles[i] * 180.0 / kPi))) + "deg";
+        }
+        sym += "]";
+        break;
+    }
+    RCLCPP_INFO(logger_,
+                "  group '%s': %zu site(s)%s target=(%.4f %.4f %.4f | %.4f %.4f %.4f %.4f) symmetry=%s "
+                "pos_tol=%.4f rot_tol=%.4f dock_time=%.2fs release_time=%.2fs",
+                g.name.c_str(), g.sites.size(), g.gendered ? " (gendered)" : "", g.dock_target[0], g.dock_target[1],
+                g.dock_target[2], g.dock_target[3], g.dock_target[4], g.dock_target[5], g.dock_target[6], sym.c_str(),
+                g.position_tolerance, g.rotation_tolerance, g.dock_time, g.release_time);
   }
   return true;
 }
@@ -283,34 +425,113 @@ bool DockSimPlugin::loadGroups()
     g.dock_time = node_->get_parameter(declare("dock_time", 1.0)).as_double();
     g.release_time = node_->get_parameter(declare("release_time", 0.0)).as_double();
 
-    const auto relpose = node_->get_parameter(declare("dock_relpose", std::vector<double>{})).as_double_array();
-    if (!relpose.empty())
+    // ---- docking target: pose of site2 expressed in site1's frame ----------
+    if (node_->has_parameter(p + "dock_relpose"))
     {
-      if (relpose.size() != 7)
+      RCLCPP_ERROR(logger_,
+                   "group '%s': 'dock_relpose' is no longer supported; use "
+                   "'dock_target.position' / 'dock_target.quaternion' / 'dock_target.symmetry' instead.",
+                   name.c_str());
+      return false;
+    }
+
+    const auto target_pos =
+        node_->get_parameter(declare("dock_target.position", std::vector<double>{})).as_double_array();
+    if (!target_pos.empty())
+    {
+      if (target_pos.size() != 3)
       {
-        RCLCPP_ERROR(logger_, "group '%s': dock_relpose must have exactly 7 values (pos + quat), got %zu.", name.c_str(),
-                     relpose.size());
+        RCLCPP_ERROR(logger_, "group '%s': dock_target.position must have exactly 3 values, got %zu.", name.c_str(),
+                     target_pos.size());
         return false;
       }
-      std::copy(relpose.begin(), relpose.end(), g.dock_relpose);
+      std::copy(target_pos.begin(), target_pos.end(), g.dock_target);
+    }
+
+    const auto target_quat =
+        node_->get_parameter(declare("dock_target.quaternion", std::vector<double>{})).as_double_array();
+    if (!target_quat.empty())
+    {
+      if (target_quat.size() != 4)
+      {
+        RCLCPP_ERROR(logger_,
+                     "group '%s': dock_target.quaternion must have exactly 4 values (w, x, y, z), got %zu.",
+                     name.c_str(), target_quat.size());
+        return false;
+      }
+      std::copy(target_quat.begin(), target_quat.end(), g.dock_target + 3);
       double n = 0.0;
       for (int i = 3; i < 7; ++i)
       {
-        n += g.dock_relpose[i] * g.dock_relpose[i];
+        n += g.dock_target[i] * g.dock_target[i];
       }
       if (n < kQuatNormEps)
       {
-        g.dock_relpose[3] = 1.0;
-        g.dock_relpose[4] = g.dock_relpose[5] = g.dock_relpose[6] = 0.0;
+        RCLCPP_WARN(logger_, "group '%s': dock_target.quaternion is not a rotation; using the identity.", name.c_str());
+        g.dock_target[3] = 1.0;
+        g.dock_target[4] = g.dock_target[5] = g.dock_target[6] = 0.0;
       }
       else
       {
         n = std::sqrt(n);
         for (int i = 3; i < 7; ++i)
         {
-          g.dock_relpose[i] /= n;
+          g.dock_target[i] /= n;
         }
       }
+    }
+
+    // ---- symmetry of the target orientation --------------------------------
+    const std::string sym_mode =
+        node_->get_parameter(declare("dock_target.symmetry.mode", std::string("none"))).as_string();
+    if (sym_mode == "discrete")
+    {
+      g.symmetry = SymmetryMode::DISCRETE;
+    }
+    else if (sym_mode == "continuous")
+    {
+      g.symmetry = SymmetryMode::CONTINUOUS;
+    }
+    else if (!sym_mode.empty() && sym_mode != "none")
+    {
+      RCLCPP_ERROR(logger_, "group '%s': unknown dock_target.symmetry.mode '%s' (expected none|discrete|continuous).",
+                   name.c_str(), sym_mode.c_str());
+      return false;
+    }
+
+    const std::string sym_axis =
+        node_->get_parameter(declare("dock_target.symmetry.axis", std::string("z"))).as_string();
+    if (sym_axis == "x")
+    {
+      g.symmetry_axis = 0;
+    }
+    else if (sym_axis == "y")
+    {
+      g.symmetry_axis = 1;
+    }
+    else if (sym_axis.empty() || sym_axis == "z")
+    {
+      g.symmetry_axis = 2;
+    }
+    else
+    {
+      RCLCPP_ERROR(logger_, "group '%s': unknown dock_target.symmetry.axis '%s' (expected x|y|z).", name.c_str(),
+                   sym_axis.c_str());
+      return false;
+    }
+
+    const auto sym_angles =
+        node_->get_parameter(declare("dock_target.symmetry.angles_deg", std::vector<double>{})).as_double_array();
+    for (const double a : sym_angles)
+    {
+      g.symmetry_angles.push_back(a * kPi / 180.0);
+    }
+    if (g.symmetry == SymmetryMode::DISCRETE && g.symmetry_angles.empty())
+    {
+      RCLCPP_WARN(logger_,
+                  "group '%s': dock_target.symmetry.mode is 'discrete' but angles_deg is empty; only the target "
+                  "orientation itself will be accepted.",
+                  name.c_str());
     }
 
     auto add = [&](const std::vector<std::string>& in, std::set<int>& out, const char* what) {
@@ -431,7 +652,7 @@ int DockSimPlugin::findGroup(int s1, int s2, const std::string& requested) const
   return -1;
 }
 
-int DockSimPlugin::acquireSlot(int s1, int s2, int /*group*/)
+int DockSimPlugin::acquireSlot(const mjData* data, int s1, int s2, int /*group*/)
 {
   for (size_t i = 0; i < pool_.size(); ++i)
   {
@@ -442,13 +663,22 @@ int DockSimPlugin::acquireSlot(int s1, int s2, int /*group*/)
   }
   for (size_t i = 0; i < pool_.size(); ++i)
   {
-    if (!pool_[i].in_use)
+    if (pool_[i].in_use)
     {
-      pool_[i].in_use = true;
-      pool_[i].pair_s1 = s1;
-      pool_[i].pair_s2 = s2;
-      return static_cast<int>(i);
+      continue;
     }
+    // A slot whose weld is currently active belongs to an interface that is docked (e.g.
+    // a weld that was active in the MJCF at load time, adopted or not).  Re-pointing it
+    // would silently drop that weld, so it is not handed out.
+    const int eq = pool_[i].eq_id;
+    if (data != nullptr && eq >= 0 && eq < model_->neq && data->eq_active[eq])
+    {
+      continue;
+    }
+    pool_[i].in_use = true;
+    pool_[i].pair_s1 = s1;
+    pool_[i].pair_s2 = s2;
+    return static_cast<int>(i);
   }
   return -1;
 }
@@ -937,7 +1167,7 @@ void DockSimPlugin::update(const mjModel* /*model*/, mjData* data)
     }
     else
     {
-      const int slot = (existing >= 0) ? pairs_[existing].slot : acquireSlot(job.site1, job.site2, group);
+      const int slot = (existing >= 0) ? pairs_[existing].slot : acquireSlot(data, job.site1, job.site2, group);
       if (slot < 0)
       {
         reject = "No free slot in the weld pool (pool size " + std::to_string(pool_.size()) + ").";
@@ -999,8 +1229,8 @@ void DockSimPlugin::update(const mjModel* /*model*/, mjData* data)
 
     double pos[3], quat[4];
     relativePose(data, p.site1, p.site2, pos, quat);
-    double pos_err, rot_err;
-    poseError(pos, quat, g.dock_relpose, pos_err, rot_err);
+    double pos_tgt[3], quat_tgt[4], pos_err, rot_err;
+    nearestTarget(g, pos, quat, pos_tgt, quat_tgt, pos_err, rot_err);
     const bool in_tol = pos_err <= g.position_tolerance && rot_err <= g.rotation_tolerance;
 
     if (p.has_deadline && now > p.deadline)
@@ -1040,7 +1270,10 @@ void DockSimPlugin::update(const mjModel* /*model*/, mjData* data)
         pw.repoint = true;
         pw.site1 = p.site1;
         pw.site2 = p.site2;
-        std::copy(g.dock_relpose, g.dock_relpose + 7, pw.relpose);
+        // Weld to the *nearest accepted* orientation, not to the nominal target: with a
+        // symmetric connector the two parts are not necessarily in the nominal phase.
+        std::copy(pos_tgt, pos_tgt + 3, pw.relpose);
+        std::copy(quat_tgt, quat_tgt + 4, pw.relpose + 3);
         pending.push_back(pw);
 
         JobResult r;
