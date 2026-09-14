@@ -203,11 +203,11 @@ stateDiagram-v2
 ```bash
 # 把镜片从存储插口上松开
 ros2 service call /mujoco_dock_sim_plugin/release mujoco_dock_sim_plugin/srv/Release \
-  "{site1: 'len_ring_1_S5', site2: 'len_dock_1_site', timeout: 15.0}"
+  "{site1: 'len_ring_1_S0', site2: 'len_dock_1_site', timeout: 15.0}"
 
 # 对准后对接（group 留空 -> 自动选组）
 ros2 service call /mujoco_dock_sim_plugin/dock mujoco_dock_sim_plugin/srv/Dock \
-  "{site1: 'len_ring_1_S5', site2: 'len_center_S4', group: '', timeout: 20.0}"
+  "{site1: 'len_ring_1_S0', site2: 'len_center_S3', group: '', timeout: 20.0}"
 ```
 
 ---
@@ -258,7 +258,7 @@ ros2 service call /mujoco_dock_sim_plugin/dock mujoco_dock_sim_plugin/srv/Dock \
         groups:
           # 存储 / 穹顶装配：固定相位（y 同向、x 反向）
           default:
-            sites: ["len_ring_1_S1", ..., "len_center_S6", "len_dock_1_site", ...]
+            sites: ["len_ring_1_S0", ..., "len_center_S5", "len_dock_1_site", ...]
             position_tolerance: 0.01
             rotation_tolerance: 0.15
             dock_target:
@@ -269,7 +269,7 @@ ros2 service call /mujoco_dock_sim_plugin/dock mujoco_dock_sim_plugin/srv/Dock \
             release_time: 0.2
           # 机械臂磁吸抓取：矩形面两个相位都允许
           grasp:
-            sites: ["len_ring_1_S1", ..., "arm_A__tcp_site", "arm_B__tcp_site"]
+            sites: ["len_ring_1_S0", ..., "arm_A__tcp_site", "arm_B__tcp_site"]
             position_tolerance: 0.01
             rotation_tolerance: 0.15
             dock_target:
